@@ -1,3 +1,5 @@
+/.envrc
+/openfhe-venv/
 /.cache/
 /build/
-/pack/*.txt
+/pack/*.h5

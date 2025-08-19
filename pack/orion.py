@@ -1,4 +1,4 @@
-#!/home/jyh/project/conv-chain/conv-venv/bin/python3
+#!/home/jyh/project/openfhe-conv/openfhe-venv/bin/python3
 # run  := python3 orion.py
 # dir  := .
 # kid  :=
@@ -6,16 +6,13 @@
 import math
 import time
 
-import torch.nn as nn
-import torch.nn.functional as F
-import scipy.sparse as sp
-import math
-import time
-import torch
-import scipy.sparse as sp
-import tqdm
 import numpy as np
+import scipy.sparse as sp
+import torch
+import tqdm
+import h5py
 
+# credit: orion
 def construct_conv2d_toeplitz(weight, H, W):
     N = 1
     on_Co, on_Ci = weight.shape[:2]
@@ -95,57 +92,15 @@ def construct_conv2d_toeplitz(weight, H, W):
     toeplitz = sp.kron(sp.eye(N, dtype="f"), toeplitz, format="csr")
     return toeplitz
 
+# credit: orion
 def diagonalize(
     matrix: sp.csr_matrix,
     num_slots: int,
     embed_method: str,
     is_last_layer: bool,
 ):
-    """
-    For each (slots, slots) block of the input matrix, this function 
-    extracts the generalized diagonals and stores them in a dictionary. 
-    Each key ((i,j)) in the dictionary block_{i,j}, and the value is 
-    another dictionary mapping diagonal indices to their values.
-
-    Args:
-        matrix (scipy.sparse.csr_matrix): A 4D tensor representing a weight matrix 
-            for a fully-connected or convolutional layer. The shape must 
-            conform to (num_blocks_y, num_blocks_x, slots, slots).
-        slots (int): The number of SIMD plaintext slots, dictating the 
-            block size.
-
-    Returns:
-        dict: A dictionary where each key is a tuple (i, j) corresponding 
-              to the (i, j)th (slots, slots) block of `matrix`. The value 
-              for each key is another dictionary that maps diagonal indices 
-              within the block to the diagonal's tensor values.
-
-    Examples:
-        >>> matrix = torch.tensor([[[[ 0,  1,  2,  3],
-                                     [ 4,  5,  6,  7],
-                                     [ 8,  9, 10, 11],
-                                     [12, 13, 14, 15]]]])
-        >>> # Example with slots=4, showing processing of a single block
-        >>> print(diagonalize(matrix, slots=4)) 
-        {(0, 0): {0: [0., 5., 10., 15.], 
-                  1: [1., 6., 11., 12.], 
-                  2: [2., 7., 8., 13.], 
-                  3: [3., 4., 9., 14.]}}
-
-        >>> # Example with slots=2, showing processing of four blocks or 
-              sub-matrices
-        >>> print(diagonalize(matrix, slots=2)) 
-        {(0, 0): {0: [0., 5.], 
-                  1: [1., 4.]}, 
-         (0, 1): {0: [2., 7.], 
-                  1: [3., 6.]}, 
-         (1, 0): {0: [8., 13.], 
-                  1: [9., 12.]}, 
-         (1, 1): {0: [10., 15.], 
-                  1: [11., 14.]}}
-    """
-
-    matrix_height, matrix_width = matrix.shape
+    assert matrix.shape is not None
+    matrix_height, matrix_width = matrix.shape[0], matrix.shape[1]
     num_block_rows = math.ceil(matrix_height / num_slots)
     num_block_cols = math.ceil(matrix_width / num_slots)
     print(f"├── embed method: {embed_method}")
@@ -213,102 +168,95 @@ def diagonalize(
     print(f"├── time to pack (s): {elapsed_time:.2f}")
     print(f"├── # diagonals = {total_diagonals}")
 
-    return diagonals_by_block, output_rotations
+    return diagonals_by_block, num_block_rows, num_block_cols, output_rotations
 
-def split_near_9(N: int):
-    if N % 9:
-        raise ValueError()
-    M = N // 9
-    best = (1, M)
-    best_err = abs(best[1] - 9*best[0])
-    for d in range(1, int(math.isqrt(M)) + 1):
-        if M % d == 0:
-            err = abs(M//d - 9*d)
-            if err < best_err:
-                best = (d, M//d)
-                best_err = err
-                if err == 0:
-                    break
-    return best
+def orion_search(offsets, n_slots):
+    n1 = 1
+    while n1 < n_slots:
+        bs = set()
+        gs = set()
+        for d in offsets:
+            bs.add(d % n1)
+            gs.add((d // n1) * n1)
+        bs.discard(0)
+        gs.discard(0)
+        if len(bs) == len(gs):
+            return n1
+        if len(bs) > len(gs):
+            return n1 // 2
+        n1 *= 2
 
-np.random.seed(42)
-torch.manual_seed(42)
+def pad_to_multiple_cipher(x, n_slots, fill=0):
+    x = np.asarray(x.flatten())
+    if x.ndim != 1:
+        raise ValueError("must be 1D array")
+    if n_slots <= 0:
+        raise ValueError("n_slots must be positive")
+    n = x.shape[0]
+    pad = (-n) % n_slots
+    if pad == 0:
+        return x
+    return np.pad(x, (0, pad), mode="constant", constant_values=fill)
 
-n_channels = 64
-input_size = 32
-n_slots = 2**13
+if __name__ == "__main__":
+    H, W = 32, 32
+    C, M = 32, 32
+    R, S = 3, 3
+    n_slots = 2**13
 
-H, W = input_size, input_size
-C, M = n_channels, n_channels
-R, S = 3, 3
-input = torch.rand(1, M, H, W)
-kernel1 = torch.rand(M, C, R, S)
-kernel2 = torch.rand(M, C, R, S)
-matrix1 = construct_conv2d_toeplitz(kernel1, H, W)
-matrix2 = construct_conv2d_toeplitz(kernel2, H, W)
-blocks1, _ = diagonalize(matrix1, num_slots=n_slots, embed_method="", is_last_layer=False)
-blocks2, _ = diagonalize(matrix2, num_slots=n_slots, embed_method="", is_last_layer=False)
+    np.random.seed(42)
+    input = np.random.rand(1, C, H, W)
+    kernel = np.random.rand(M, C, 3, 3)
+    ref = torch.nn.functional.conv2d(torch.tensor(input), torch.tensor(kernel), padding=1)
 
-channel_per_cipher = n_slots // (H * W)
-n1, n2 = split_near_9(R*S*channel_per_cipher)
-base_gs = n1 * H * W
+    toeplitz = construct_conv2d_toeplitz(torch.tensor(kernel), H, W)
+    diags, T_in, T_out, __ = diagonalize(toeplitz, n_slots, "", False)
 
-def get_bs(k):
-    return k % (n1 * H * W)
+    global_rots = set()
+    block_rots = [[(set(), set()) for _ in range(T_in)] for _ in range(T_out)]
+    block_n1 = [[0 for _ in range(T_in)] for _ in range(T_out)]
+    for idx, block in diags.items():
+        tx, ty = idx
+        n1 = orion_search(list(block.keys()), n_slots)
+        for d in block.keys():
+            bs = d % n1
+            gs = (d // n1) * n1
+            global_rots.add(bs)
+            global_rots.add(gs)
+            block_rots[tx][ty][0].add(bs)
+            block_rots[tx][ty][1].add(gs)
+            block_n1[tx][ty] = n1
 
-def get_gs(k):
-    return (k // (n1 * H * W)) * H * W
+    v_bs = [set() for _ in range(T_in)]
+    for i in range(T_out):
+        for j in range(T_in):
+            v_bs[j].update(block_rots[i][j][0])
 
+    with h5py.File("/home/jyh/project/openfhe-conv/pack/orion.h5", "w") as f:
+        f.attrs["n_slots"] = np.int32(n_slots)
+        f.attrs["T_in"] = np.int32(T_in)
+        f.attrs["T_out"] = np.int32(T_out)
 
-o1 = torch.nn.functional.conv2d(input, kernel1, stride=1, padding=1)
-o2 = torch.nn.functional.conv2d(o1, kernel2, stride=1, padding=1).flatten()
-with open("orion-ref.txt", "w") as f:
-    for i in range(o2.shape[0]):
-        print(float(o2[i]), file=f)
+        global_group = f.create_group("global")
+        global_group.create_dataset("rotations", data=np.array(sorted(global_rots), dtype=np.int32))
+        for i in range(T_in):
+            global_group.create_dataset(f"bs{i}", data=np.array(sorted(v_bs[i]), dtype=np.int32))
+        global_group.create_dataset("input", data=pad_to_multiple_cipher(input, n_slots).reshape(-1, n_slots), dtype=np.float32)
+        global_group.create_dataset("reference", data=pad_to_multiple_cipher(ref.numpy(), n_slots).reshape(-1, n_slots), dtype=np.float32)
 
-with open("orion-pack.txt", "w") as f:
-    print(n_slots, H, W, C, M, R, S, n1, n2, file=f)
-    bs = []
-    gs = []
-    for k, v in blocks1.items():
-        for i, (rot, vec) in enumerate(v.items()):
-            if i < n1 * 9:
-                bs.append(rot)
-            if i % (n1 * 9) == 0:
-                gs.append(rot)
-        break
+        blocks_group = f.create_group("blocks")
+        for i in range(T_out):
+            for j in range(T_in):
+                block = diags.get((i, j), {})
+                n1 = block_n1[i][j]
+                bs = [offset % n1 for offset in block.keys()]
+                gs = [(offset // n1) * n1 for offset in block.keys()]
 
-    print(len(bs), len(gs), file=f)
-    for i in bs:
-        print(i, end=' ', file=f)
-    print(file=f)
-    for i in gs:
-        print(i, end=' ', file=f)
-    print(file=f)
+                vecs = list(block.values())
+                vecs_rots = [np.roll(vecs[k], gs[k]) for k in range(len(vecs))]
 
-    n_diags, x_max, y_max = 0, 0, 0
-    for k, v in blocks1.items():
-        n_diags += len(v)
-        x_max = max(x_max, k[0] + 1)
-        y_max = max(y_max, k[1] + 1)
-    print(n_diags, x_max, y_max, file=f)
-    for k, v in blocks1.items():
-        for i, (rot, vec) in enumerate(v.items()):
-            print(k[0], k[1], get_bs(rot), get_gs(rot), file=f)
-            for num in np.roll(vec, get_gs(rot)):
-                print(num, end=' ', file=f)
-            print(file=f)
-    for k, v in blocks2.items():
-        for i, (rot, vec) in enumerate(v.items()):
-            print(k[0], k[1], get_bs(rot), get_gs(rot), file=f)
-            for num in np.roll(vec, get_gs(rot)):
-                print(num, end=' ', file=f)
-            print(file=f)
+                blocks_group.create_dataset(f"diags_{i}_{j}", data=np.array(vecs_rots, dtype=np.float32))
 
-    print(C*H*W // n_slots, file=f)
-    cipher_full = input.numpy().flatten()
-    for i in range(0, C*H*W, n_slots):
-        c = cipher_full[i:i+n_slots]
-        for num in c:
-            print(num, end=' ', file=f)
-        print(file=f)
+                blocks_group.create_dataset(f"bs_{i}_{j}", data=np.array(bs, dtype=np.int32))
+                blocks_group.create_dataset(f"gs_{i}_{j}", data=np.array(gs, dtype=np.int32))
+
