@@ -132,6 +132,22 @@ def binary_search(diags, n_slots):
             left = mid + 1
     return mid
 
+def orion_search(offsets, n_slots):
+    n1 = 1
+    while n1 < n_slots:
+        bs = set()
+        gs = set()
+        for d in offsets:
+            bs.add(d % n1)
+            gs.add((d // n1) * n1)
+        bs.discard(0)
+        gs.discard(0)
+        if len(bs) == len(gs):
+            return n1
+        if len(bs) > len(gs):
+            return n1 // 2
+        n1 *= 2
+
 def pad_to_multiple_cipher(x, n_slots, fill=0):
     x = np.asarray(x.flatten())
     if x.ndim != 1:
@@ -165,8 +181,13 @@ def inner01(weights, operands):
 if __name__ == "__main__":
     H, W = 32, 32
     C, M = 32, 32
-    R, S = 3, 3
     n_slots = 2**13
+
+    H, W = 58, 58
+    C, M = 32, 32
+    n_slots = 2**13
+
+    R, S = 3, 3
     Ht, Wt = 2, 2
     NHt, NWt = H // Ht, W // Wt
 
@@ -217,13 +238,15 @@ if __name__ == "__main__":
     mats = []
 
     diags, T_in, T_out, __ = diagonalize(mat_base, n_slots, "", False)
+    offsets = set()
+    for k, v in diags.items():
+        offsets.update(v.keys())
     n1 = binary_search(diags, n_slots)
 
     global_rots = set(list(input2c_offset.flatten()))
     block_rots = [[(set(), set()) for _ in range(T_in)] for _ in range(T_out)]
     for idx, block in diags.items():
         tx, ty = idx
-        n1 = binary_search(diags, n_slots)
         for d in block.keys():
             bs = d % n1
             gs = (d // n1) * n1
@@ -233,9 +256,16 @@ if __name__ == "__main__":
             block_rots[tx][ty][1].add(gs)
 
     v_bs = [set() for _ in range(T_in)]
+    row_gs = [set() for _ in range(T_out)]
     for i in range(T_out):
         for j in range(T_in):
             v_bs[j].update(block_rots[i][j][0])
+            row_gs[i].update(block_rots[i][j][1])
+    for j in range(T_in):
+        print(len(v_bs[j]))
+    print()
+    for i in range(T_out):
+        print(len(row_gs[i]))
 
     with h5py.File("winograd.h5", "w") as f:
         f.attrs["H"] = np.int32(H)

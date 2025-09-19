@@ -20,6 +20,9 @@
 #define PP
 #endif
 
+extern int NUM_ADDS;
+extern int NUM_MULTS;
+extern int NUM_ROTS;
 
 struct Diagonal {
     int bs, gs;
@@ -30,14 +33,14 @@ typedef std::vector<Diagonal> Block;
 typedef std::vector<Block> Row;
 typedef std::vector<Row> Mat;
 typedef std::vector<lbcrypto::Ciphertext<lbcrypto::DCRTPoly>> multi_cipher;
-typedef std::vector<std::unordered_map<int, lbcrypto::Ciphertext<lbcrypto::DCRTPoly>>> multi_cipher_bs;
+typedef std::vector<std::unordered_map<int, lbcrypto::Ciphertext<lbcrypto::DCRTPoly>>> multi_cipher_bsgs;
 
 lbcrypto::Ciphertext<lbcrypto::DCRTPoly>
 blocks_dot_product(lbcrypto::CryptoContext<lbcrypto::DCRTPoly>&,
                    Row&,
                    std::vector<std::unordered_map<int, lbcrypto::Ciphertext<lbcrypto::DCRTPoly>>> &);
 
-multi_cipher blocks_matrix_mult(lbcrypto::CryptoContext<lbcrypto::DCRTPoly>&, Mat&, multi_cipher_bs&, int);
+multi_cipher blocks_matrix_mult(lbcrypto::CryptoContext<lbcrypto::DCRTPoly>&, Mat&, multi_cipher_bsgs&, int);
 
 template<typename T> T read_attr(const H5::H5Object &obj, const char *name, const H5::PredType &t) {
     H5::Attribute a = obj.openAttribute(name);

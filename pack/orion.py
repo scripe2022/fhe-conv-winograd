@@ -199,7 +199,7 @@ def pad_to_multiple_cipher(x, n_slots, fill=0):
     return np.pad(x, (0, pad), mode="constant", constant_values=fill)
 
 if __name__ == "__main__":
-    H, W = 32, 32
+    H, W = 56, 56
     C, M = 32, 32
     R, S = 3, 3
     n_slots = 2**13
@@ -228,11 +228,13 @@ if __name__ == "__main__":
             block_n1[tx][ty] = n1
 
     v_bs = [set() for _ in range(T_in)]
+    row_gs = [set() for _ in range(T_out)]
     for i in range(T_out):
         for j in range(T_in):
             v_bs[j].update(block_rots[i][j][0])
+            row_gs[i].update(block_rots[i][j][1])
 
-    with h5py.File("/home/jyh/project/openfhe-conv/pack/orion.h5", "w") as f:
+    with h5py.File("orion.h5", "w") as f:
         f.attrs["n_slots"] = np.int32(n_slots)
         f.attrs["T_in"] = np.int32(T_in)
         f.attrs["T_out"] = np.int32(T_out)

@@ -1,5 +1,5 @@
 // comp := cmake --build .
-// run  := OMP_NUM_THREADS=1 ./openfhe_conv orion ../pack/orion.h5
+// run  := ./openfhe_conv orion ../pack/orion.h5
 // run  := OMP_NUM_THREADS=1 ./openfhe_conv winograd ../pack/winograd.h5
 // dir  := /home/jyh/project/openfhe-conv/build
 // kid  :=
@@ -98,15 +98,33 @@ void orion(char *filename) {
     for (int i = 0; i < T_in; ++i) v_bs.push_back(read_array_1d<int>(file, ("/global/bs" + to_string(i)).c_str(), PredType::NATIVE_INT));
 
     // NOTE: fhe
+    // CCParams<CryptoContextCKKSRNS> params;
+    // params.SetSecurityLevel(HEStd_NotSet);
+    // params.SetMultiplicativeDepth(MULT_DEPTH);
+    // params.SetScalingModSize(SCALING_FACTOR);
+    // params.SetBatchSize(n_slots);
+    // params.SetRingDim(n_slots * 2);
+    // CryptoContext<DCRTPoly> cc = GenCryptoContext(params);
+    // cc->Enable(PKE);
+    // cc->Enable(KEYSWITCH);
+    // cc->Enable(LEVELEDSHE);
+    // cc->Enable(ADVANCEDSHE);
+    // KeyPair<DCRTPoly> keys = cc->KeyGen();
+    // cc->EvalMultKeyGen(keys.secretKey);
+    // cc->EvalRotateKeyGen(keys.secretKey, global_rots);
+
     CCParams<CryptoContextCKKSRNS> params;
     params.SetSecurityLevel(HEStd_NotSet);
-    params.SetMultiplicativeDepth(MULT_DEPTH);
-    params.SetScalingModSize(SCALING_FACTOR);
+
+    // {29, 26, 26, 26, 26, 26}
+    params.SetMultiplicativeDepth(5);
+    params.SetFirstModSize(60);
+    params.SetScalingModSize(40);
+    params.SetScalingTechnique(FIXEDMANUAL);
     params.SetBatchSize(n_slots);
     params.SetRingDim(n_slots * 2);
     CryptoContext<DCRTPoly> cc = GenCryptoContext(params);
     cc->Enable(PKE);
-    cc->Enable(KEYSWITCH);
     cc->Enable(LEVELEDSHE);
     cc->Enable(ADVANCEDSHE);
     KeyPair<DCRTPoly> keys = cc->KeyGen();
@@ -134,7 +152,7 @@ void orion(char *filename) {
     for (int i = 0; i < T_out; ++i) mat[i] = read_row_blocks_orion(cc, file, i, T_in);
 
     // NOTE: read input
-    multi_cipher_bs inputs(T_in);
+    multi_cipher_bsgs inputs(T_in);
     multi_cipher inputs_raw = read_input_orion(cc, keys, file);
     assert(inputs_raw.size() == T_in);
 
@@ -145,6 +163,7 @@ void orion(char *filename) {
         auto ct_precomp = cc->EvalFastRotationPrecompute(inputs_raw[i]);
         for (int bs: v_bs[i]) {
             inputs[i].insert({bs, bs != 0 ? cc->EvalFastRotation(inputs_raw[i], bs, CyclotomicOrder, ct_precomp) : inputs_raw[i]});
+            if (bs != 0) ++NUM_ROTS;
         }
     }
 
@@ -171,4 +190,5 @@ void orion(char *filename) {
     }
     double avg_precision = accumulate(precisions.begin(), precisions.end(), 0.0) / precisions.size();
     cerr << "MAE: " << mae / (n_slots * (int)outputs.size()) << ", " << "MAX_ERR: " << max_err << ", avg precisions: " << avg_precision << endl;
+    cerr << "NUM_ADDS: " << NUM_ADDS << ", NUM_MULTS: " << NUM_MULTS << ", NUM_ROTS: " << NUM_ROTS << endl;
 }
